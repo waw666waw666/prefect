@@ -5,7 +5,7 @@ Utilities for extensions of and operations on Python collections.
 import io
 import itertools
 import types
-from collections import OrderedDict
+from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import (
     Callable,
     Collection,
@@ -242,6 +242,38 @@ class StopVisiting(BaseException):
     When raised, the expression is returned without modification and recursive visits
     in that path will end.
     """
+
+
+def _rebuild_sequence(
+    seq: Union[list[Any], tuple[Any, ...], set[Any], frozenset[Any], deque[Any]],
+    items: list[Any],
+) -> Any:
+    """
+    Create a copy of `seq` that holds `items`, keeping the type of `seq`.
+    """
+    if isinstance(seq, tuple) and hasattr(type(seq), "_make"):
+        # NamedTuples take their fields as positional arguments
+        return type(seq)._make(items)  # pyright: ignore[reportAttributeAccessIssue]
+    if isinstance(seq, deque):
+        # Keep the bound of the original deque
+        return type(seq)(items, seq.maxlen)
+    return type(seq)(items)
+
+
+def _rebuild_mapping(mapping: dict[Any, Any], items: list[tuple[Any, Any]]) -> Any:
+    """
+    Create a copy of `mapping` that holds `items`, keeping the type of `mapping`.
+
+    Calling the type of the mapping with the new items is not enough for dict
+    subclasses whose constructor takes different arguments: `defaultdict` expects
+    its default factory first, and `Counter` counts the `(key, value)` pairs it
+    is given instead of storing them.
+    """
+    if isinstance(mapping, defaultdict):
+        return type(mapping)(mapping.default_factory, items)
+    if isinstance(mapping, Counter):
+        return type(mapping)(dict(items))
+    return type(mapping)(items)
 
 
 @overload
@@ -489,17 +521,15 @@ def visit_collection(
 
     # --- Sequences
 
-    elif isinstance(expr, (list, tuple, set)):
-        seq = cast(Union[list[Any], tuple[Any], set[Any]], expr)
+    elif isinstance(expr, (list, tuple, set, frozenset, deque)):
+        seq = cast(
+            Union[list[Any], tuple[Any], set[Any], frozenset[Any], deque[Any]], expr
+        )
         items = [visit_nested(o) for o in seq]
         if return_data:
             modified = any(item is not orig for item, orig in zip(items, seq))
             if modified:
-                # Use _make for NamedTuples
-                if hasattr(type(seq), "_make"):
-                    result = type(seq)._make(items)
-                else:
-                    result = type(seq)(items)
+                result = _rebuild_sequence(seq, items)
 
     # --- Dictionaries
 
@@ -512,7 +542,7 @@ def visit_collection(
                 for (k1, v1), (k2, v2) in zip(items, mapping.items())
             )
             if modified:
-                result = type(mapping)(items)
+                result = _rebuild_mapping(mapping, items)
 
     # --- Dataclasses
 

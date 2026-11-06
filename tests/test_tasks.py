@@ -10,6 +10,7 @@ import threading
 import time
 import weakref
 from asyncio import Event, sleep
+from collections import defaultdict, deque
 from functools import partial, wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -3077,6 +3078,48 @@ class TestTaskInputs:
                 TaskRunResult(id=b.state_details.task_run_id),
             },
             y={
+                TaskRunResult(id=b.state_details.task_run_id),
+                TaskRunResult(id=c.state_details.task_run_id),
+            },
+        )
+
+    async def test_futures_nested_in_stdlib_containers_are_resolved(
+        self, prefect_client, events_pipeline
+    ):
+        @task
+        def foo(x):
+            return x
+
+        @task
+        def bar(groups, queue):
+            return dict(groups), list(queue), groups.default_factory
+
+        @flow
+        def test_flow():
+            a = foo.submit(1)
+            b = foo.submit(2)
+            c = foo.submit(3)
+            groups = defaultdict(list)
+            groups["odd"].extend([a, c])
+            groups["even"].append(b)
+            d = bar(groups, deque([b, c]), return_state=True)
+            return a, b, c, d
+
+        flow_state = test_flow(return_state=True)
+        a, b, c, d = await flow_state.result()
+
+        assert await d.result() == ({"odd": [1, 3], "even": [2]}, [2, 3], list)
+
+        await events_pipeline.process_events()
+        task_run = await prefect_client.read_task_run(d.state_details.task_run_id)
+
+        assert comparable_inputs(task_run.task_inputs) == dict(
+            groups={
+                TaskRunResult(id=a.state_details.task_run_id),
+                TaskRunResult(id=b.state_details.task_run_id),
+                TaskRunResult(id=c.state_details.task_run_id),
+            },
+            queue={
                 TaskRunResult(id=b.state_details.task_run_id),
                 TaskRunResult(id=c.state_details.task_run_id),
             },

@@ -2,6 +2,7 @@ import dataclasses
 import io
 import json
 import uuid
+from collections import Counter, OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -650,6 +651,67 @@ class TestVisitCollection:
         assert result.x[1] is val.x[1]
         assert result.y["a"] is not val.y["a"]
         assert result.y["d"] is val.y["d"]
+
+    @pytest.mark.parametrize(
+        "inp,expected",
+        [
+            (deque([3, 4]), deque([3, -4])),
+            (deque([[3, 4]]), deque([[3, -4]])),
+            (frozenset([3, 4]), frozenset([3, -4])),
+            ({3: frozenset([4])}, {3: frozenset([-4])}),
+            (OrderedDict([(3, 4), (5, 6)]), OrderedDict([(3, -4), (5, -6)])),
+            (defaultdict(list, {3: [4]}), defaultdict(list, {3: [-4]})),
+            (defaultdict(list, {4: 3}), defaultdict(list, {-4: 3})),
+            (Counter({"a": 2, "b": 3}), Counter({"a": -2, "b": 3})),
+        ],
+    )
+    def test_visit_collection_transforms_stdlib_containers(self, inp, expected):
+        result = visit_collection(inp, visit_fn=negative_even_numbers, return_data=True)
+        assert type(result) is type(expected)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "inp,expected",
+        [
+            (deque([3, 4]), {4}),
+            (frozenset([3, 4, 6]), {4, 6}),
+            ({3: deque([frozenset([4])])}, {4}),
+            (defaultdict(list, {3: [4]}), {4}),
+            (Counter({"a": 2}), {2}),
+        ],
+    )
+    def test_visit_collection_visits_stdlib_containers(self, inp, expected):
+        result = visit_collection(inp, visit_fn=visit_even_numbers, return_data=False)
+        assert result is None
+        assert EVEN == expected
+
+    def test_visit_collection_keeps_defaultdict_default_factory(self):
+        val = defaultdict(list, {"a": [2]})
+        result = visit_collection(val, negative_even_numbers, return_data=True)
+        assert result is not val
+        assert result == {"a": [-2]}
+        assert result.default_factory is list
+        result["b"].append(1)
+        assert result["b"] == [1]
+
+    def test_visit_collection_keeps_deque_maxlen(self):
+        val = deque([1, 2], maxlen=2)
+        result = visit_collection(val, negative_even_numbers, return_data=True)
+        assert result == deque([1, -2])
+        assert result.maxlen == 2
+
+    def test_visit_collection_only_copies_changed_stdlib_containers(self):
+        val = defaultdict(list, {"a": deque([1, 3]), "b": deque([2])})
+        result = visit_collection(val, negative_even_numbers, return_data=True)
+        assert result is not val
+        assert result["a"] is val["a"]
+        assert result["b"] is not val["b"]
+
+        unchanged = Counter({"a": 1})
+        assert (
+            visit_collection(unchanged, negative_even_numbers, return_data=True)
+            is unchanged
+        )
 
     def test_visit_collection_respects_lazy_evaluation(self):
         """Test that visit_collection does not trigger lazy evaluation in Pydantic models
